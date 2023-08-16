@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/goccy/go-json"
+	"github.com/joho/godotenv"
 	"io"
-	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
-	"reflect"
-	"time"
+	"os"
+	"strings"
 )
 
 type Data struct {
@@ -31,15 +32,11 @@ type result struct {
 }
 
 func main() {
+	_ = godotenv.Load()
 	r := gin.Default()
 	r.Use(corsMiddleware())
 
 	r.POST("/session", func(c *gin.Context) {
-
-		fmt.Printf("请求方法：%s\n", c.Request.Method)
-		fmt.Printf("请求路径：%s\n", c.Request.URL.Path)
-		fmt.Printf("请求参数：%v\n", c.Request.Form)
-
 		data := Data{
 			Status:  "Success",
 			Message: "",
@@ -92,9 +89,8 @@ func main() {
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer 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")
+		req.Header.Set("Authorization", "Bearer "+os.Getenv("OPENAI_API_KEY"))
 		req.Header.Set("proxy_buffering", "off")
-
 		// 发送POST请求
 		resp, err := client.Do(req)
 		if err != nil {
@@ -103,63 +99,88 @@ func main() {
 		}
 		defer resp.Body.Close()
 		//fmt.Println(resp.Body)
-		// 处理响应
-		var resultData result
-		err = json.NewDecoder(resp.Body).Decode(&resultData)
+		readAll, err := io.ReadAll(resp.Body)
 		if err != nil {
-			c.String(http.StatusInternalServerError, "无法解析响应数据")
+			log.Fatalln(err.Error())
 			return
 		}
-		fmt.Println()
-		fmt.Println(resultData.Choices[0].Message.Content)
-		c.JSON(http.StatusOK, gin.H{
-			"message": resultData.Choices[0].Message.Content,
-		})
-		//c.Stream(func(w io.Writer) bool {
-		//	// 将响应写入到前端
-		//	_, err := w.Write(responseBody)
-		//	if err != nil {
-		//		fmt.Println(err.Error())
-		//		// 处理错误情况
-		//		return false
-		//	}
-		//	return true
-		//})
-		//c.Header("Content-Type", "text/event-stream")
-		//c.Header("Cache-Control", "no-cache")
-		//c.Header("Connection", "keep-alive")
-		//c.Header("Access-Control-Allow-Origin", "*")
-		//responseBody, _ := ioutil.ReadAll(resp.Body)
-		//
-		//c.Stream(func(w io.Writer) bool {
-		//	// 将响应写入到前端
-		//	_, err := w.Write(responseBody)
-		//	if err != nil {
-		//		fmt.Println(err.Error())
-		//		// 处理错误情况
-		//		return false
-		//	}
-		//	return true
-		//})
+		if resp.StatusCode != http.StatusOK {
+			readAll, err := io.ReadAll(resp.Body)
+			if err != nil {
+				log.Fatalln(err.Error())
+				return
+			}
+			fmt.Println(string(readAll))
+			return
+		}
+		//c.Header("Content-Type", "application/octet-stream")
+		//_, err = io.Copy(c.Writer, resp.Body)
+		//if err != nil {
+		//	fmt.Println("Error streaming response:", err)
+		//}
+		handler(c, readAll)
+
 	})
-	//r.POST("/chat-process", func(c *gin.Context) {
-	//	// 设置响应头为 text/event-stream
-	//	c.Header("Content-Type", "text/event-stream")
-	//	c.Header("Cache-Control", "no-cache")
-	//	c.Header("Connection", "keep-alive")
-	//	c.Header("Access-Control-Allow-Origin", "*")
-	//
-	//	c.Stream(func(w io.Writer) bool {
-	//		// 将响应写入到前端
-	//		_, err := w.Write(responseBody)
-	//		if err != nil {
-	//			// 处理错误情况
-	//			return false
-	//		}
-	//		return true
-	//	})
-	//})
+
 	r.Run(":8888")
+}
+func handler(c *gin.Context, respData []byte) {
+	c.Header("Content-Type", "application/octet-stream")
+	c.Header("Connection", "keep-alive")
+	c.Header("Cache-Control", "no-cache")
+
+	c.Status(http.StatusOK)
+	c.Writer.Flush()
+
+	// Simulate handlerFunction's response for demonstration
+	lines := strings.Split(string(respData), "\n\n")
+	str := ""
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		message := strings.Replace(line, "data: ", "", 1)
+		if message == "[DONE]" {
+			return
+		}
+
+		var parsed struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+
+		if err := json.Unmarshal([]byte(message), &parsed); err != nil {
+			fmt.Println("Error parsing JSON:", err)
+			continue
+		}
+
+		fmt.Println("parsed content -", message)
+
+		// 将 JSON 字符串解析为 map[string]interface{} 类型
+		var jsonData map[string]interface{}
+		err := json.Unmarshal([]byte(message), &jsonData)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		str = str + parsed.Choices[0].Delta.Content
+		// 添加新的键值对到 JSON 对象中
+		jsonData["text"] = str
+		jsonData["role"] = "assistant"
+		jsonData["parentMessageId"] = "4658e67c-cec5-42e1-acc7-23f2a0ac89f1"
+
+		// 将更新后的 JSON 对象转换回 JSON 字符串
+		updatedJSON, err := json.Marshal(jsonData)
+		if err != nil {
+			log.Fatal(err)
+		}
+		c.String(200, "%s\n", updatedJSON)
+		c.Writer.Flush()
+	}
 }
 
 // 跨域中间件
@@ -175,292 +196,5 @@ func corsMiddleware() gin.HandlerFunc {
 		}
 
 		c.Next()
-	}
-}
-func chatProcessHandler(c *gin.Context) {
-	c.Header("Content-Type", "application/octet-stream")
-
-	var requestData struct {
-		Prompt        string         `json:"prompt"`
-		Options       RequestOptions `json:"options"`
-		SystemMessage string         `json:"systemMessage"`
-		Temperature   float64        `json:"temperature"`
-		TopP          float64        `json:top_p`
-	}
-
-	err := c.BindJSON(&requestData)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	firstChunk := true
-
-	err = chatReplyProcess(requestData.Prompt, requestData.Options, requestData.SystemMessage, requestData.Temperature, requestData.TopP, func(chat ChatMessage) {
-		if firstChunk {
-			c.JSON(http.StatusOK, chat)
-			firstChunk = false
-		} else {
-			c.Writer.WriteString("\n")
-			c.JSON(http.StatusOK, chat)
-		}
-	})
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.Status(http.StatusOK)
-}
-
-type RequestOptions struct {
-	Message         string            `json:"message"`
-	LastContext     interface{}       `json:"lastContext"`
-	Process         func(interface{}) `json:"-"`
-	SystemMessage   string            `json:"systemMessage"`
-	Temperature     float64           `json:"temperature"`
-	TopP            float64           `json:"top_p"`
-	ParentMessageId string            `json:"parentMessageId"`
-}
-type SendMessageOptions struct {
-	TimeoutMs        int    `json:"timeoutMs"`
-	SystemMessage    string `json:"systemMessage,omitempty"`
-	CompletionParams struct {
-		Model       string  `json:"model,omitempty"`
-		Temperature float64 `json:"temperature,omitempty"`
-		TopP        float64 `json:"top_p,omitempty"`
-	} `json:"completionParams,omitempty"`
-	ParentMessageId string `json:"parentMessageId,omitempty"`
-	Stream          bool   `json:"-"`
-}
-type CompletionParams struct {
-	Model       string  `json:"model"`
-	Temperature float64 `json:"temperature"`
-	TopP        float64 `json:"top_p"`
-}
-type Role string
-
-const (
-	User      Role = "user"
-	Assistant Role = "assistant"
-	System    Role = "system"
-)
-
-type ChatMessage struct {
-	ID              string      `json:"id"`
-	Text            string      `json:"text"`
-	Role            Role        `json:"role"`
-	Name            string      `json:"name,omitempty"`
-	Delta           string      `json:"delta,omitempty"`
-	Detail          interface{} `json:"detail,omitempty"`
-	ParentMessageID string      `json:"parentMessageId,omitempty"`
-	ConversationID  string      `json:"conversationId,omitempty"`
-}
-
-func chatReplyProcess(message string, lastContext RequestOptions, systemMessage string, temperature float64, topP float64, process func(ChatMessage)) error {
-	options := SendMessageOptions{TimeoutMs: 100000}
-	var apiModel = "ChatGPTAPI" // Set the value of apiModel here
-
-	if apiModel == "ChatGPTAPI" {
-		if systemMessage != "" {
-			options.SystemMessage = systemMessage
-		}
-		options.CompletionParams = struct {
-			Model       string  `json:"model,omitempty"`
-			Temperature float64 `json:"temperature,omitempty"`
-			TopP        float64 `json:"top_p,omitempty"`
-		}(CompletionParams{Model: apiModel, Temperature: temperature, TopP: topP})
-	}
-
-	if !reflect.DeepEqual(lastContext, RequestOptions{}) {
-		if apiModel == "ChatGPTAPI" {
-			options.ParentMessageId = lastContext.ParentMessageId
-		} else {
-			options.ParentMessageId = lastContext.ParentMessageId
-		}
-	}
-
-	response, err := api.SendMessage(message, options)
-	if err != nil {
-		if codeMsg, ok := ErrorCodeMessage[err.StatusCode]; ok {
-			return fmt.Errorf(codeMsg)
-		}
-		return fmt.Errorf(err.Message)
-	}
-
-	process(response)
-
-	return nil
-}
-
-func SendMessage(text string, opts sendMessageOptions) (response, error) {
-	messageID := opts.MessageID
-	if messageID == "" {
-		messageID = uuidv4()
-	}
-	timeoutMs := opts.TimeoutMs
-	onProgress := opts.OnProgress
-	stream := opts.Stream && onProgress != nil
-	completionParams := opts.CompletionParams
-
-	var abortSignal chan bool
-	var abortController chan bool
-	if timeoutMs > 0 && abortSignal == nil {
-		abortController = make(chan bool)
-		abortSignal = abortController
-	}
-
-	message := message{
-		Role:            "user",
-		ID:              messageID,
-		ParentMessageID: opts.ParentMessageID,
-		Text:            text,
-	}
-	err := upsertMessage(message)
-	if err != nil {
-		return response{}, err
-	}
-
-	messages, maxTokens, numTokens, err := buildMessages(text, opts)
-	if err != nil {
-		return response{}, err
-	}
-
-	result := response{
-		Role:            "assistant",
-		ID:              uuidv4(),
-		ParentMessageID: messageID,
-		Text:            "",
-	}
-
-	responseP := make(chan response)
-	go func() {
-		url := fmt.Sprintf("%s/chat/completions", apiBaseUrl)
-		headers := map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": fmt.Sprintf("Bearer %s", apiKey),
-		}
-		body := map[string]interface{}{
-			"max_tokens": maxTokens,
-			"messages":   messages,
-			"stream":     stream,
-		}
-		if completionParams != nil {
-			for k, v := range completionParams {
-				body[k] = v
-			}
-		}
-
-		if debug {
-			fmt.Printf("sendMessage (%d tokens): %v\n", numTokens, body)
-		}
-
-		if stream {
-			onMessage := func(data string) {
-				if data == "[DONE]" {
-					result.Text = result.Text
-					responseP <- result
-					return
-				}
-
-				var responseData map[string]interface{}
-				err := json.Unmarshal([]byte(data), &responseData)
-				if err != nil {
-					fmt.Println("OpenAI stream SEE event unexpected error", err)
-					return
-				}
-
-				responseID, ok := responseData["id"].(string)
-				if ok {
-					result.ID = responseID
-				}
-
-				choices, ok := responseData["choices"].([]interface{})
-				if ok && len(choices) > 0 {
-					delta, ok := choices[0].(map[string]interface{})["delta"].(map[string]interface{})
-					if ok {
-						resultDelta, ok := delta["content"].(string)
-						if ok {
-							result.Text += resultDelta
-						}
-					}
-				}
-
-				result.Detail = responseData
-
-				if deltaRole, ok := delta["role"].(string); ok {
-					result.Role = deltaRole
-				}
-
-				onProgress(result)
-			}
-
-			err := fetchSSE(url, headers, body, abortSignal, onMessage)
-			if err != nil {
-				responseP <- response{}
-			}
-		} else {
-			res, err := fetch(url, "POST", headers, body, abortSignal)
-			if err != nil {
-				return response{}, err
-			}
-
-			if !res.Ok {
-				reason, _ := ioutil.ReadAll(res.Body)
-				msg := fmt.Sprintf("OpenAI error %d: %s", res.Status, string(reason))
-				err = fmt.Errorf(msg)
-				return response{}, err
-			}
-
-			var responseData map[string]interface{}
-			err = json.NewDecoder(res.Body).Decode(&responseData)
-			if err != nil {
-				return response{}, err
-			}
-
-			responseID, ok := responseData["id"].(string)
-			if ok {
-				result.ID = responseID
-			}
-
-			choices, ok := responseData["choices"].([]interface{})
-			if ok && len(choices) > 0 {
-				message2, ok := choices[0].(map[string]interface{})["message"].(map[string]interface{})
-				if ok {
-					result.Text, _ = message2["content"].(string)
-				}
-			} else {
-				res2 := responseData
-				err = fmt.Errorf("OpenAI error: %v", res2["detail"])
-				return response{}, err
-			}
-
-			result.Detail = responseData
-			responseP <- result
-		}
-	}()
-
-	responseTimeout := make(chan bool)
-	go func() {
-		timeoutMs := timeoutMs
-		if timeoutMs > 0 {
-			milliseconds := time.Duration(timeoutMs) * time.Millisecond
-			time.Sleep(milliseconds)
-			responseTimeout <- true
-		}
-	}()
-
-	select {
-	case <-responseP:
-		if abortController != nil {
-			close(abortController)
-		}
-		return response{}, fmt.Errorf("OpenAI timed out waiting for response")
-	case <-responseTimeout:
-		if abortController != nil {
-			close(abortController)
-		}
-		return response, nil
 	}
 }
