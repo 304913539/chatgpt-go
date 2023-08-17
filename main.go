@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 type Data struct {
@@ -98,28 +99,39 @@ func main() {
 			return
 		}
 		defer resp.Body.Close()
-		//fmt.Println(resp.Body)
-		readAll, err := io.ReadAll(resp.Body)
-		if err != nil {
-			log.Fatalln(err.Error())
-			return
-		}
-		if resp.StatusCode != http.StatusOK {
-			readAll, err := io.ReadAll(resp.Body)
-			if err != nil {
-				log.Fatalln(err.Error())
-				return
-			}
-			fmt.Println(string(readAll))
-			return
-		}
-		//c.Header("Content-Type", "application/octet-stream")
-		//_, err = io.Copy(c.Writer, resp.Body)
-		//if err != nil {
-		//	fmt.Println("Error streaming response:", err)
-		//}
-		handler(c, readAll)
+		buf := make([]byte, 1024)
+		_, _ = c.Writer.Write([]byte("["))
 
+		for {
+			n, err := resp.Body.Read(buf)
+			if n > 0 {
+				handler(c, buf[:n])
+			} else {
+				break
+			}
+			if err != nil {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		_, _ = c.Writer.Write([]byte("]"))
+
+		//for {
+		//
+		//	readAll, err := io.ReadAll(resp.Body)
+		//	if err != nil {
+		//		log.Fatalln(err.Error())
+		//		return
+		//	}
+		//	fmt.Println(string(readAll))
+		//
+		//	if resp.StatusCode != http.StatusOK {
+		//		fmt.Println(string(readAll))
+		//		return
+		//	}
+		//	handler(c, readAll)
+		//
+		//}
 	})
 
 	r.Run(":8888")
@@ -129,55 +141,95 @@ func handler(c *gin.Context, respData []byte) {
 	c.Header("Connection", "keep-alive")
 	c.Header("Cache-Control", "no-cache")
 
-	c.Status(http.StatusOK)
-	c.Writer.Flush()
+	//c.Status(http.StatusOK)
+	c.Stream(func(w io.Writer) bool {
 
-	// Simulate handlerFunction's response for demonstration
-	lines := strings.Split(string(respData), "\n\n")
-	str := ""
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
+		// Simulate handlerFunction's response for demonstration
+		lines := strings.Split(string(respData), "\n\n")
+		str := ""
+		for _, line := range lines {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+
+			message := strings.Replace(line, "data: ", "", 1)
+			if message == "[DONE]" {
+				return false
+			}
+
+			var parsed struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}
+
+			if err := json.Unmarshal([]byte(message), &parsed); err != nil {
+				fmt.Println("Error parsing JSON:", err)
+				continue
+			}
+
+			fmt.Println("parsed content -", message)
+
+			// 将 JSON 字符串解析为 map[string]interface{} 类型
+			var jsonData map[string]interface{}
+			err := json.Unmarshal([]byte(message), &jsonData)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			str = str + parsed.Choices[0].Delta.Content
+			// 添加新的键值对到 JSON 对象中
+			jsonData["text"] = str
+
+			// 将更新后的 JSON 对象转换回 JSON 字符串
+			updatedJSON, err := json.Marshal(jsonData)
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Fprintf(c.Writer, "%s\n", updatedJSON)
+
+			c.Writer.Flush()
+			time.Sleep(time.Millisecond * 10) // Simulate typing effect delay
+
 		}
+		return true
+	})
+}
 
-		message := strings.Replace(line, "data: ", "", 1)
-		if message == "[DONE]" {
+func qq(c *gin.Context) {
+	jsonData := `
+		[{"role":"assistant","id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","parentMessageId":"090b183b-d6e1-47eb-81fc-7d72e1571732","text":"","delta":"","detail":{"id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","object":"chat.completion.chunk","created":1692196974,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}},
+{"role":"assistant","id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","parentMessageId":"090b183b-d6e1-47eb-81fc-7d72e1571732","text":"你","delta":"你","detail":{"id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","object":"chat.completion.chunk","created":1692196974,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{"content":"你"},"finish_reason":null}]}},
+{"role":"assistant","id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","parentMessageId":"090b183b-d6e1-47eb-81fc-7d72e1571732","text":"你好","delta":"好","detail":{"id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","object":"chat.completion.chunk","created":1692196974,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{"content":"好"},"finish_reason":null}]}},
+{"role":"assistant","id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","parentMessageId":"090b183b-d6e1-47eb-81fc-7d72e1571732","text":"你好！","delta":"！","detail":{"id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","object":"chat.completion.chunk","created":1692196974,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{"content":"！"},"finish_reason":null}]}},
+{"role":"assistant","id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","parentMessageId":"090b183b-d6e1-47eb-81fc-7d72e1571732","text":"你好！有","delta":"有","detail":{"id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","object":"chat.completion.chunk","created":1692196974,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{"content":"有"},"finish_reason":null}]}},
+{"role":"assistant","id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","parentMessageId":"090b183b-d6e1-47eb-81fc-7d72e1571732","text":"你好！有什","delta":"什","detail":{"id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","object":"chat.completion.chunk","created":1692196974,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{"content":"什"},"finish_reason":null}]}},
+{"role":"assistant","id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","parentMessageId":"090b183b-d6e1-47eb-81fc-7d72e1571732","text":"你好！有什么","delta":"么","detail":{"id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","object":"chat.completion.chunk","created":1692196974,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{"content":"么"},"finish_reason":null}]}},
+{"role":"assistant","id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","parentMessageId":"090b183b-d6e1-47eb-81fc-7d72e1571732","text":"你好！有什么我","delta":"我","detail":{"id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","object":"chat.completion.chunk","created":1692196974,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{"content":"我"},"finish_reason":null}]}},
+{"role":"assistant","id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","parentMessageId":"090b183b-d6e1-47eb-81fc-7d72e1571732","text":"你好！有什么我可以","delta":"可以","detail":{"id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","object":"chat.completion.chunk","created":1692196974,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{"content":"可以"},"finish_reason":null}]}},
+{"role":"assistant","id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","parentMessageId":"090b183b-d6e1-47eb-81fc-7d72e1571732","text":"你好！有什么我可以帮","delta":"帮","detail":{"id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","object":"chat.completion.chunk","created":1692196974,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{"content":"帮"},"finish_reason":null}]}},
+{"role":"assistant","id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","parentMessageId":"090b183b-d6e1-47eb-81fc-7d72e1571732","text":"你好！有什么我可以帮助","delta":"助","detail":{"id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","object":"chat.completion.chunk","created":1692196974,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{"content":"助"},"finish_reason":null}]}},
+{"role":"assistant","id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","parentMessageId":"090b183b-d6e1-47eb-81fc-7d72e1571732","text":"你好！有什么我可以帮助你","delta":"你","detail":{"id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","object":"chat.completion.chunk","created":1692196974,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{"content":"你"},"finish_reason":null}]}},
+{"role":"assistant","id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","parentMessageId":"090b183b-d6e1-47eb-81fc-7d72e1571732","text":"你好！有什么我可以帮助你的","delta":"的","detail":{"id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","object":"chat.completion.chunk","created":1692196974,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{"content":"的"},"finish_reason":null}]}},
+{"role":"assistant","id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","parentMessageId":"090b183b-d6e1-47eb-81fc-7d72e1571732","text":"你好！有什么我可以帮助你的吗","delta":"吗","detail":{"id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","object":"chat.completion.chunk","created":1692196974,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{"content":"吗"},"finish_reason":null}]}},
+{"role":"assistant","id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","parentMessageId":"090b183b-d6e1-47eb-81fc-7d72e1571732","text":"你好！有什么我可以帮助你的吗？","delta":"？","detail":{"id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","object":"chat.completion.chunk","created":1692196974,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{"content":"？"},"finish_reason":null}]}},
+{"role":"assistant","id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","parentMessageId":"090b183b-d6e1-47eb-81fc-7d72e1571732","text":"你好！有什么我可以帮助你的吗？","detail":{"id":"chatcmpl-7oC1WqDpjdJxOAU1z5HP6rrUfFlHM","object":"chat.completion.chunk","created":1692196974,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}}]
+	`
+	var data []map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
+		c.String(500, "Failed to parse JSON")
+		return
+	}
+
+	for _, obj := range data {
+		updatedJSON, err := json.Marshal(obj)
+		if err != nil {
+			c.String(500, "Failed to marshal JSON")
 			return
 		}
 
-		var parsed struct {
-			Choices []struct {
-				Delta struct {
-					Content string `json:"content"`
-				} `json:"delta"`
-			} `json:"choices"`
-		}
-
-		if err := json.Unmarshal([]byte(message), &parsed); err != nil {
-			fmt.Println("Error parsing JSON:", err)
-			continue
-		}
-
-		fmt.Println("parsed content -", message)
-
-		// 将 JSON 字符串解析为 map[string]interface{} 类型
-		var jsonData map[string]interface{}
-		err := json.Unmarshal([]byte(message), &jsonData)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		str = str + parsed.Choices[0].Delta.Content
-		// 添加新的键值对到 JSON 对象中
-		jsonData["text"] = str
-		jsonData["role"] = "assistant"
-		jsonData["parentMessageId"] = "4658e67c-cec5-42e1-acc7-23f2a0ac89f1"
-
-		// 将更新后的 JSON 对象转换回 JSON 字符串
-		updatedJSON, err := json.Marshal(jsonData)
-		if err != nil {
-			log.Fatal(err)
-		}
 		c.String(200, "%s\n", updatedJSON)
 		c.Writer.Flush()
 	}
