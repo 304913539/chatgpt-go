@@ -1,13 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,14 +21,6 @@ type Data struct {
 }
 type Message struct {
 	Content string `json:"content"`
-}
-type Choice struct {
-	FinishReason string  `json:"finish_reason"`
-	Index        int     `json:"index"`
-	Message      Message `json:"message"`
-}
-type result struct {
-	Choices []Choice `json:"choices"`
 }
 
 func main() {
@@ -51,6 +43,7 @@ func main() {
 
 	r.Run(":8888")
 }
+
 func process(c *gin.Context) {
 	all, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -97,6 +90,7 @@ func process(c *gin.Context) {
 	// 发送POST请求
 	resp, err := client.Do(req)
 	if err != nil {
+		fmt.Println(err)
 		c.String(http.StatusInternalServerError, "请求发送失败")
 		return
 	}
@@ -104,76 +98,47 @@ func process(c *gin.Context) {
 	c.Header("Content-Type", "application/octet-stream")
 	c.Header("Connection", "keep-alive")
 	c.Header("Cache-Control", "no-cache")
-
+	scanner := bufio.NewScanner(resp.Body)
+	str := ""
 	c.Stream(func(w io.Writer) bool {
 
-		// Simulate handlerFunction's response for demonstration
-		//readAll, err := io.ReadAll(resp.Body)
-		buf := make([]byte, 1024)
-
-		//if err != nil {
-		//	return false
-		//}
-		//lines := strings.Split(string(readAll), "\n\n")
-		str := ""
-		var buffer bytes.Buffer // 用于存储未处理完的数据块
-
-		for {
-			n, _ := resp.Body.Read(buf)
-			if n <= 0 {
-				return false
-			}
-			buffer.Write(buf[:n]) // 将新数据块写入缓冲区
-			for {
-				line, err := buffer.ReadString('\n') // 尝试从缓冲区中读取一行数据
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "data:") {
+				responseBuffer := []byte(line[6:])
+				var responseChunk map[string]interface{}
+				err := json.Unmarshal(responseBuffer, &responseChunk)
 				if err != nil {
-					break // 无法读取完整的一行，继续等待更多数据
-				}
-
-				// 在这里处理完整的数据行，可以添加你的逻辑
-				message := strings.Replace(line, "data: ", "", 1)
-
-				if message == "[DONE]" {
+					fmt.Println("解码响应块时出错:", err)
 					return false
 				}
-
-				var parsed struct {
-					Choices []struct {
-						Delta struct {
-							Content string `json:"content"`
-						} `json:"delta"`
-					} `json:"choices"`
+				choices, ok := responseChunk["choices"].([]interface{})
+				if !ok || len(choices) == 0 {
+					return false
 				}
-				fmt.Println(message)
-				if err := json.Unmarshal([]byte(message), &parsed); err != nil {
-					fmt.Println("Error parsing JSON:", err)
-					continue
-				} else {
-					fmt.Println("11112ss", parsed.Choices[0].Delta.Content)
+				choice, ok := choices[0].(map[string]interface{})
+				if !ok {
+					return false
 				}
+				delta, ok := choice["delta"].(map[string]interface{})
+				if !ok {
+					return false
+				}
+				content, ok := delta["content"].(string)
+				if !ok {
+					return false
 
-				// 将 JSON 字符串解析为 map[string]interface{} 类型
-				var jsonData map[string]interface{}
-
-				err = json.Unmarshal([]byte(message), &jsonData)
+				}
+				str += content
+				responseChunk["text"] = str
+				jsonData, err := json.Marshal(responseChunk)
 				if err != nil {
-					log.Fatal(err)
+					fmt.Println("转换为 JSON 失败:", err)
+					return false
 				}
-
-				str = str + parsed.Choices[0].Delta.Content
-				// 添加新的键值对到 JSON 对象中
-				jsonData["text"] = str
-
-				// 将更新后的 JSON 对象转换回 JSON 字符串
-				updatedJSON, err := json.Marshal(jsonData)
-				if err != nil {
-					log.Fatal(err)
-				}
-				fmt.Fprintf(c.Writer, "%s\n", updatedJSON)
-
+				fmt.Fprintf(c.Writer, "%s\n", jsonData)
 				c.Writer.Flush()
 			}
-
 		}
 		return true
 	})
